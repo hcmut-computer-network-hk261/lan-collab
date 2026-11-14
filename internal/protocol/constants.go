@@ -41,6 +41,7 @@ const (
 const (
 	MsgHeartbeat uint8 = 0x10
 	MsgChat      uint8 = 0x11
+	MsgReceipt   uint8 = 0x12
 	MsgFileInit  uint8 = 0x20
 	MsgFileChunk uint8 = 0x21
 	MsgFileEnd   uint8 = 0x22
@@ -71,8 +72,8 @@ const (
 const (
 	InitialCwnd     = 4.0  // packets
 	InitialSsthresh = 16.0 // packets
-	MaxCwnd         = 255  // packets, upper bound of cwnd
-	RecvWindow      = 255  // packets buffered per receive stream; rwnd is advertised in 0..64
+	MaxCwnd         = 255  // packets, upper bound of cwnd (fits the 1-byte rwnd field)
+	RecvWindow      = 255  // packets buffered per receive stream; rwnd is advertised in 0..255
 
 	HeartbeatInterval = 3 * time.Second
 	SessionTimeout    = 10 * time.Second
@@ -81,6 +82,16 @@ const (
 	MinRTO     = 20 * time.Millisecond
 	MaxRTO     = 2000 * time.Millisecond
 )
+
+// Receipt statuses, in order; a status never goes backwards.
+const (
+	ReceiptSent      = "sent"      // the server has the message
+	ReceiptDelivered = "delivered" // it reached the recipient's client
+	ReceiptSeen      = "seen"      // the recipient opened the conversation
+)
+
+// MaxReceiptIDs caps the message IDs in one receipt so it fits in one 1024-byte chunk.
+const maxReceiptIDs = 40
 
 // Default server ports.
 const (
@@ -91,7 +102,7 @@ const (
 // IsDataMsg reports whether t is sequenced, acknowledged and retransmitted by the Selective Repeat engine.
 func IsDataMsg(t uint8) bool {
 	switch t {
-	case MsgChat, MsgFileInit, MsgFileChunk, MsgFileEnd, MsgFileDone:
+	case MsgChat, MsgReceipt, MsgFileInit, MsgFileChunk, MsgFileEnd, MsgFileDone:
 		return true
 	}
 	return false
@@ -112,6 +123,8 @@ func MsgTypeName(t uint8) string {
 		return "HEARTBEAT"
 	case MsgChat:
 		return "CHAT_MSG"
+	case MsgReceipt:
+		return "RECEIPT"
 	case MsgFileInit:
 		return "FILE_INIT"
 	case MsgFileChunk:

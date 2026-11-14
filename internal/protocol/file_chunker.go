@@ -16,6 +16,9 @@ type FileInitMeta struct {
 	Size        int64  `json:"size"`
 	TotalChunks uint32 `json:"total_chunks"`
 	SHA256      string `json:"sha256"`
+	To          string `json:"to,omitempty"`
+	From        string `json:"from,omitempty"`
+	Info        string `json:"info,omitempty"`
 }
 
 // Reassembly errors.

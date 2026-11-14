@@ -30,13 +30,25 @@ type ControlMsg struct {
 	UserID       uint16     `json:"user_id,omitempty"`
 	SessionKey   []byte     `json:"session_key,omitempty"`
 	Peers        []PeerInfo `json:"peers,omitempty"`
+	Users        []string   `json:"users,omitempty"`
 }
 
 // ChatPayload is the plaintext JSON carried by CHAT_MSG on stream 1.
 type ChatPayload struct {
-	From string `json:"from"`
-	Text string `json:"text"`
-	TS   int64  `json:"ts"`
+	From   string `json:"from"`
+	Text   string `json:"text"`
+	TS     int64  `json:"ts"`
+	To     string `json:"to,omitempty"`
+	Stored bool   `json:"stored,omitempty"`
+	ID     string `json:"id,omitempty"`
+}
+
+// ReceiptPayload reports the status of direct messages or files, always routed through the server by name.
+type ReceiptPayload struct {
+	Status string   `json:"status"`
+	IDs    []string `json:"ids"`
+	To     string   `json:"to,omitempty"`
+	From   string   `json:"from,omitempty"`
 }
 
 // FileDonePayload tells the sender (on stream 1) whether the received file matched its SHA-256.
@@ -44,6 +56,7 @@ type FileDonePayload struct {
 	StreamID uint16 `json:"stream_id"`
 	OK       bool   `json:"ok"`
 	Reason   string `json:"reason,omitempty"`
+	Queued   bool   `json:"queued,omitempty"`
 }
 
 // Framing errors.
