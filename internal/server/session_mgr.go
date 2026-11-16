@@ -242,7 +242,7 @@ func (m *SessionManager) SweepTimeouts(maxIdle time.Duration) []uint16 {
 
 // BroadcastPeerUpdate pushes the current peer list to every session without blocking.
 func (m *SessionManager) BroadcastPeerUpdate() {
-	msg := protocol.ControlMsg{Type: protocol.CtrlPeerUpdate, Peers: m.Peers()}
+	msg := protocol.ControlMsg{Type: protocol.CtrlPeerUpdate, Peers: m.Peers(), Users: m.Usernames()}
 	m.mu.RLock()
 	targets := make([]*ClientSession, 0, len(m.sessions))
 	for _, s := range m.sessions {
@@ -341,4 +341,32 @@ func validUsername(name string) bool {
 		}
 	}
 	return true
+}
+
+// Usernames returns every registered username, sorted; offline users can still receive stored messages and files.
+func (m *SessionManager) Usernames() []string {
+	m.mu.RLock()
+	names := make([]string, 0, len(m.users))
+	for name := range m.users {
+		names = append(names, name)
+	}
+	m.mu.RUnlock()
+	sort.Strings(names)
+	return names
+}
+
+// HasUser reports whether username is a registered account.
+func (m *SessionManager) HasUser(username string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.users[username]
+	return ok
+}
+
+// IDByName returns the UserID of username if that user is online.
+func (m *SessionManager) IDByName(username string) (uint16, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	id, ok := m.byName[username]
+	return id, ok
 }

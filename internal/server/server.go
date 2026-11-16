@@ -38,6 +38,9 @@ type Server struct {
 	sweepEvery     time.Duration
 	dropRate       float64
 	fileQueueLimit int
+	spoolDir       string // folder for offline files ("" = a private temporary folder)
+	ownSpool       bool   // the spool folder was created by us and is removed on Close
+	mailboxBytes   int64  // per-recipient byte limit for stored files (0 = default)
 
 	mu      sync.Mutex
 	started bool
@@ -121,6 +124,38 @@ func (s *Server) SetFileQueueLimit(packets int) error {
 	return nil
 }
 
+// SetSpoolDir sets the folder for files stored for offline users; call before Start.
+func (s *Server) SetSpoolDir(dir string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.started {
+		return errors.New("server: SetSpoolDir must be called before Start")
+	}
+	s.spoolDir = dir
+	return nil
+}
+
+// SpoolDir returns the folder used for offline files (after Start).
+func (s *Server) SpoolDir() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.spoolDir
+}
+
+// SetMailboxLimit sets how many bytes of stored files one offline user may receive (default 256 MiB); call before Start.
+func (s *Server) SetMailboxLimit(bytes int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.started {
+		return errors.New("server: SetMailboxLimit must be called before Start")
+	}
+	if bytes <= 0 {
+		return errors.New("server: the mailbox limit must be positive")
+	}
+	s.mailboxBytes = bytes
+	return nil
+}
+
 // SetDropRate injects simulated loss (0..1) into the server's outgoing UDP datagrams.
 func (s *Server) SetDropRate(rate float64) {
 	s.mu.Lock()
@@ -139,6 +174,12 @@ func (s *Server) Start() error {
 		s.mu.Unlock()
 		return errors.New("server: already started or closed")
 	}
+	dir, own, err := prepareSpoolDir(s.spoolDir)
+	if err != nil {
+		s.mu.Unlock()
+		return fmt.Errorf("server: spool folder: %w", err)
+	}
+	s.spoolDir, s.ownSpool = dir, own
 	s.started = true
 	s.ep = transport.NewRDTEndpoint(s.udp, s.resolveKey)
 	s.ep.SetLocalID(protocol.ServerID)
@@ -146,6 +187,10 @@ func (s *Server) Start() error {
 	s.router = NewRouter(s.sm, s.ep, s.logf)
 	if s.fileQueueLimit > 0 {
 		s.router.SetFileQueueLimit(s.fileQueueLimit)
+	}
+	s.router.setSpoolDir(dir)
+	if s.mailboxBytes > 0 {
+		s.router.box.byteLimit = s.mailboxBytes
 	}
 	s.mu.Unlock()
 
@@ -184,6 +229,7 @@ func (s *Server) Close() error {
 		conns = append(conns, c)
 	}
 	ep, router := s.ep, s.router
+	spool, ownSpool := s.spoolDir, s.ownSpool
 	s.mu.Unlock()
 
 	err := s.ln.Close()
@@ -203,6 +249,9 @@ func (s *Server) Close() error {
 		router.Wait()
 	}
 	waitWithTimeout(&s.wg, shutdownWait)
+	if ownSpool {
+		_ = os.RemoveAll(spool)
+	}
 	return err
 }
 
@@ -296,6 +345,7 @@ func (s *Server) handleConn(raw net.Conn) {
 		SessionKey:   sess.SessionKey,
 		HeartbeatSec: heartbeatSec,
 		Peers:        s.sm.Peers(),
+		Users:        s.sm.Usernames(),
 	}
 	if err := ctrl.Send(res); err != nil {
 		s.dropSession(sess.UserID, "could not send AUTH_RES")
@@ -305,6 +355,7 @@ func (s *Server) handleConn(raw net.Conn) {
 	go s.controlWriter(sess)
 	s.logf("%q signed in as #%d from %s (UDP port %d)", sess.Username, sess.UserID, raw.RemoteAddr(), hello.UDPPort)
 	s.sm.BroadcastPeerUpdate()
+	s.router.DeliverStored(sess) // chat and files that waited while this user was offline
 
 	for {
 		msg, err := ctrl.Recv(0)
@@ -369,6 +420,7 @@ func (s *Server) sweepLoop() {
 			if len(ids) > 0 {
 				s.sm.BroadcastPeerUpdate()
 			}
+			s.router.SweepMailbox(time.Now())
 		}
 	}
 }

@@ -73,6 +73,7 @@ type recipient struct {
 	sess  *ClientSession
 	chatQ chan relayItem
 	fileQ *relayQueue
+	kick  chan struct{}
 	done  chan struct{}
 	once  sync.Once
 }
@@ -101,6 +102,7 @@ type Router struct {
 	chatSeq     map[seqKey]uint32
 	failedFiles map[fileKey]struct{} // transfers already reported to their sender as failed
 	fileLimit   int
+	box         *mailbox
 
 	wg sync.WaitGroup
 }
@@ -118,7 +120,13 @@ func NewRouter(sm *SessionManager, ep *transport.RDTEndpoint, logf func(format s
 		chatSeq:     make(map[seqKey]uint32),
 		failedFiles: make(map[fileKey]struct{}),
 		fileLimit:   fileQueueLimit,
+		box:         newMailbox(""),
 	}
+}
+
+// setSpoolDir sets the folder for stored offline files. Call before Start.
+func (r *Router) setSpoolDir(dir string) {
+	r.box.dir = dir
 }
 
 // SetFileQueueLimit changes the per-recipient safety limit (in packets). Call before Start.
@@ -150,6 +158,7 @@ func (r *Router) AddRecipient(sess *ClientSession) {
 		sess:  sess,
 		chatQ: make(chan relayItem, chatQueueSize),
 		fileQ: newRelayQueue(r.fileLimit),
+		kick:  make(chan struct{}, 1),
 		done:  make(chan struct{}),
 	}
 	if old := r.recipients[sess.UserID]; old != nil {
@@ -157,9 +166,10 @@ func (r *Router) AddRecipient(sess *ClientSession) {
 	}
 	r.recipients[sess.UserID] = rc
 	r.mu.Unlock()
-	r.wg.Add(2)
+	r.wg.Add(3)
 	go r.runForwarder(rc, rc.chatQ)
 	go r.runFileForwarder(rc)
+	go r.runStoredForwarder(rc)
 }
 
 // RemoveRecipient stops the forwarders of a client that left and forgets its counters.
@@ -179,6 +189,7 @@ func (r *Router) RemoveRecipient(userID uint16) {
 		}
 	}
 	r.mu.Unlock()
+	r.box.forgetSession(userID)
 	if rc != nil {
 		rc.stop()
 	}
@@ -192,6 +203,7 @@ func (r *Router) Stop() {
 		delete(r.recipients, id)
 	}
 	r.mu.Unlock()
+	r.box.close()
 }
 
 // Wait blocks until all router goroutines have exited (after Stop and endpoint Close).
@@ -241,13 +253,33 @@ func (r *Router) relayChatStream(pkt transport.DeliveredPacket) {
 			}
 			return
 		}
-		if h.TargetID == h.SenderID || h.TargetID == protocol.ServerID {
+		if h.TargetID == protocol.ServerID {
+			r.storeOrForwardChat(h.SenderID, sender.Username, chat) // offline delivery by name
 			return
 		}
-		r.enqueueChatStream(h.SenderID, h.TargetID, protocol.MsgChat, protocol.FlagEOM, h.TargetID, body)
+		if h.TargetID == h.SenderID {
+			return
+		}
+		if r.enqueueChatStream(h.SenderID, h.TargetID, protocol.MsgChat, protocol.FlagEOM, h.TargetID, body) {
+			if target, ok := r.sm.Get(h.TargetID); ok {
+				r.sendReceipt(h.SenderID, protocol.ReceiptSent, target.Username, chat.ID)
+			}
+		}
+
+	case protocol.MsgReceipt:
+		if h.TargetID == protocol.ServerID {
+			r.relayReceipt(h.SenderID, sender.Username, pkt.Plaintext)
+		}
 
 	case protocol.MsgFileDone:
-		if h.TargetID == protocol.BroadcastTarget || h.TargetID == protocol.ServerID || h.TargetID == h.SenderID {
+		if h.TargetID == protocol.ServerID {
+			var done protocol.FileDonePayload
+			if json.Unmarshal(pkt.Plaintext, &done) == nil {
+				r.storedFileDone(h.SenderID, done) // verdict on a stored file the server delivered
+			}
+			return
+		}
+		if h.TargetID == protocol.BroadcastTarget || h.TargetID == h.SenderID {
 			return
 		}
 		r.enqueueChatStream(h.SenderID, h.TargetID, protocol.MsgFileDone, protocol.FlagEOM, h.TargetID, pkt.Plaintext)
@@ -289,7 +321,11 @@ func (r *Router) enqueueChatStream(sender, recipientID uint16, msgType, flags ui
 // relayFile queues one file packet and never blocks, because this goroutine serves every user's files.
 func (r *Router) relayFile(pkt transport.DeliveredPacket) {
 	h := pkt.Header
-	if h.TargetID == protocol.BroadcastTarget || h.TargetID == protocol.ServerID || h.TargetID == h.SenderID {
+	if h.TargetID == protocol.ServerID {
+		r.spoolFile(pkt) // a file for an offline user, stored on disk
+		return
+	}
+	if h.TargetID == protocol.BroadcastTarget || h.TargetID == h.SenderID {
 		return // files are unicast only
 	}
 	fk := fileKey{sender: h.SenderID, stream: h.StreamID}
