@@ -4,7 +4,7 @@
 "use strict";
 
 const BROADCAST = 65535;
-const MAX_WINDOW = 64;
+const MAX_WINDOW = 255;
 const MAX_FILE_BYTES = 64 * 1024 * 1024;
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp)$/i;
 
@@ -13,7 +13,8 @@ const state = {
   userId: 0,
   username: "",
   peers: [],
-  convs: new Map(),      // key -> { key, peerId, title, messages: [], unread }
+  users: [],             // every registered username, online or offline
+  convs: new Map(),      // key -> { key, name, title, messages: [], unread }; direct ones are keyed by name
   active: "all",
   transfers: new Map(),  // transfer key -> progress (side panel)
   files: new Map(),      // transfer key -> file message shown in a conversation
@@ -30,8 +31,9 @@ function el(tag, className, text) {
   return node;
 }
 
+// Send streams are unique per session; received ones are unique per sender.
 function transferKey(t) {
-  return `${t.direction}:${t.peer_id}:${t.stream_id}`;
+  return t.direction === "send" ? `send:${t.stream_id}` : `recv:${t.peer_id}:${t.stream_id}`;
 }
 
 function baseName(path) {
@@ -66,9 +68,51 @@ async function api(path, body) {
 
 function resetConversations() {
   state.convs = new Map();
-  state.convs.set("all", { key: "all", peerId: BROADCAST, title: "Everyone", messages: [], unread: 0 });
+  state.convs.set("all", { key: "all", name: "", title: "Everyone", messages: [], unread: 0 });
   state.active = "all";
   state.files = new Map();
+  state.byMid = new Map(); // message or file ID -> message, for receipts
+}
+
+// --- receipts: sent, delivered, seen ------------------------------------------
+
+const RECEIPT_RANK = { "": 0, sent: 1, delivered: 2, seen: 3 };
+const RECEIPT_LABEL = { "": "Sending\u2026", sent: "Sent", delivered: "Delivered", seen: "Seen" };
+
+function upgradeReceipt(cur, next) {
+  return (RECEIPT_RANK[next] || 0) > (RECEIPT_RANK[cur || ""] || 0) ? next : (cur || "");
+}
+
+// A small status line under a message this user sent to one person.
+function receiptNode(receipt) {
+  const r = receipt || "";
+  const node = el("div", `msg-receipt is-${r || "sending"}`, RECEIPT_LABEL[r] || r);
+  node.title = {
+    "": "Not yet confirmed by the server",
+    sent: "The server has it",
+    delivered: "It reached their app",
+    seen: "They opened this conversation",
+  }[r] || "";
+  return node;
+}
+
+function applyReceipt(ev) {
+  for (const id of ev.ids || []) {
+    const msg = state.byMid.get(id);
+    if (!msg) continue;
+    const next = upgradeReceipt(msg.receipt, ev.receipt);
+    if (next === msg.receipt) continue;
+    msg.receipt = next;
+    if (msg.node && msg.node.isConnected) msg.node.replaceWith(buildMessageNode(msg));
+  }
+}
+
+// Tells the sender we have seen their messages, while the conversation is open and the page is visible.
+function markSeen(conv) {
+  if (!conv || conv.key === "all" || !conv.needsSeen) return;
+  if (conv.key !== state.active || document.visibilityState !== "visible") return;
+  conv.needsSeen = false;
+  api("/api/seen", { peer: conv.name }).catch(() => { conv.needsSeen = true; });
 }
 
 function peerName(id, fallback) {
@@ -76,23 +120,29 @@ function peerName(id, fallback) {
   return p ? p.name : (fallback || `User #${id}`);
 }
 
-function conversationFor(peerId, title) {
-  const key = `u${peerId}`;
+// A direct conversation is keyed by the other person's name, because user IDs change at every sign-in.
+function conversationFor(name) {
+  const key = `n:${name}`;
   if (!state.convs.has(key)) {
-    state.convs.set(key, { key, peerId, title: title || peerName(peerId), messages: [], unread: 0 });
+    state.convs.set(key, { key, name, title: name, messages: [], unread: 0 });
   }
   return state.convs.get(key);
 }
 
+function isOnline(name) {
+  return state.peers.some((p) => p.name === name);
+}
+
 function currentDirectConversation() {
   const conv = state.convs.get(state.active);
-  return conv && conv.peerId !== BROADCAST ? conv : null;
+  return conv && conv.key !== "all" ? conv : null;
 }
 
 function openConversation(key) {
   if (!state.convs.has(key)) return;
   state.active = key;
   state.convs.get(key).unread = 0;
+  markSeen(state.convs.get(key));
   renderTabs();
   renderMessages();
   updateComposer();
@@ -134,27 +184,38 @@ function addChat(ev) {
   if (!direct) {
     conv = state.convs.get("all");
   } else {
-    const otherId = ev.self ? ev.target_id : ev.from_id;
-    conv = conversationFor(otherId, ev.self ? peerName(otherId) : ev.from);
+    const other = ev.peer || (ev.self ? peerName(ev.target_id) : ev.from);
+    conv = conversationFor(other);
   }
+  const note = ev.stored ? "Sent while you were offline" : "";
   const msg = {
     type: "chat",
     self: Boolean(ev.self),
     from: ev.self ? "You" : (ev.from || peerName(ev.from_id)),
     text: ev.text || "",
+    note,
     ts: ev.ts || Date.now(),
+    mid: ev.id || "",
+    receipt: ev.receipt || "",
+    showReceipt: Boolean(ev.self && direct && ev.id),
+    node: null,
   };
+  if (msg.mid && msg.self) state.byMid.set(msg.mid, msg);
+  if (direct && !ev.self) conv.needsSeen = true;
   insertMessage(conv, msg);
   if (conv.key !== state.active && !ev.self) conv.unread += 1;
   renderTabs();
   showMessage(conv, msg);
+  markSeen(conv);
 }
 
 // Every file_progress event creates or updates one message in the conversation with the
 // other person, so pictures and files appear inline like chat messages.
 function upsertFile(t) {
   const key = transferKey(t);
-  const conv = conversationFor(t.peer_id, t.peer_name || peerName(t.peer_id));
+  // Like a messenger, the receiver sees a file only once it has fully arrived.
+  if (t.direction === "recv" && t.stage !== "verified" && !state.files.has(key)) return;
+  const conv = conversationFor(t.peer_name || peerName(t.peer_id));
   let msg = state.files.get(key);
   if (!msg) {
     msg = {
@@ -166,16 +227,26 @@ function upsertFile(t) {
       preview: state.previews.get(key) || "",
       node: null,
       refs: {},
+      mid: t.msg_id || "",
+      receipt: t.receipt || "",
+      showReceipt: t.direction === "send",
     };
     state.files.set(key, msg);
+    if (msg.mid && msg.self) state.byMid.set(msg.mid, msg);
+    if (!msg.self) conv.needsSeen = true;
     insertMessage(conv, msg);
     if (conv.key !== state.active && !msg.self) conv.unread += 1;
     renderTabs();
     showMessage(conv, msg);
+    markSeen(conv);
     return;
   }
   const stageChanged = msg.t.stage !== t.stage;
+  const receipt = upgradeReceipt(msg.receipt, t.receipt);
+  const receiptChanged = receipt !== msg.receipt;
+  msg.receipt = receipt;
   msg.t = t;
+  if (receiptChanged && conv.key === state.active) { refreshFile(msg, true); return; }
   if (conv.key === state.active) refreshFile(msg, stageChanged);
 }
 
@@ -221,22 +292,22 @@ function renderPeers() {
   const list = $("peer-list");
   list.replaceChildren();
   const online = state.phase === "ONLINE";
-  $("peer-empty").hidden = online && state.peers.length > 0;
+  const offline = state.users.filter((name) => name !== state.username && !isOnline(name));
+  $("peer-empty").hidden = online && (state.peers.length > 0 || offline.length > 0);
   if (!online) return;
-  for (const p of state.peers) {
-    const li = el("li");
+  const addRow = (name, meta, isMe, isOffline) => {
+    const li = el("li", isOffline ? "is-offline" : "");
     const btn = el("button");
     btn.type = "button";
-    const isMe = p.id === state.userId;
     btn.disabled = isMe;
-    btn.title = isMe ? "This is you" : `Message ${p.name}`;
-    btn.append(el("span", "peer-dot"), el("span", "peer-name", isMe ? `${p.name} (you)` : p.name), el("span", "peer-meta", `#${p.id}`));
-    if (!isMe) {
-      btn.addEventListener("click", () => openConversation(conversationFor(p.id, p.name).key));
-    }
+    btn.title = isMe ? "This is you" : (isOffline ? `${name} is offline: messages and files wait on the server` : `Message ${name}`);
+    btn.append(el("span", "peer-dot"), el("span", "peer-name", isMe ? `${name} (you)` : name), el("span", "peer-meta", meta));
+    if (!isMe) btn.addEventListener("click", () => openConversation(conversationFor(name).key));
     li.append(btn);
     list.append(li);
-  }
+  };
+  for (const p of state.peers) addRow(p.name, `#${p.id}`, p.id === state.userId, false);
+  for (const name of offline) addRow(name, "offline", false, true);
 }
 
 function renderTabs() {
@@ -247,7 +318,7 @@ function renderTabs() {
     btn.type = "button";
     btn.setAttribute("role", "tab");
     btn.setAttribute("aria-selected", String(conv.key === state.active));
-    const online = conv.peerId === BROADCAST || state.peers.some((p) => p.id === conv.peerId);
+    const online = conv.key === "all" || isOnline(conv.name);
     btn.append(el("span", "", online ? conv.title : `${conv.title} (offline)`));
     if (conv.unread > 0) btn.append(el("span", "badge", String(conv.unread)));
     btn.addEventListener("click", () => openConversation(conv.key));
@@ -264,6 +335,9 @@ function buildChatNode(m) {
   const head = el("div", "msg-head");
   head.append(el("span", "msg-from", m.from), el("time", "", new Date(m.ts).toLocaleTimeString()));
   li.append(head, el("div", "msg-body", m.text));
+  if (m.note) li.append(el("div", "msg-note", m.note));
+  if (m.showReceipt) li.append(receiptNode(m.receipt));
+  m.node = li;
   return li;
 }
 
@@ -274,9 +348,12 @@ function renderMessages() {
   const conv = state.convs.get(state.active);
   if (!conv) return;
   if (conv.messages.length === 0) {
-    const hint = conv.peerId === BROADCAST
-      ? "No messages yet. Everything you write here goes to everyone online."
-      : `No messages with ${conv.title} yet. Only the two of you see this conversation.`;
+    let hint = "No messages yet. Everything you write here goes to everyone online.";
+    if (conv.key !== "all") {
+      hint = isOnline(conv.name)
+        ? `No messages with ${conv.title} yet. Only the two of you see this conversation.`
+        : `${conv.title} is offline. Messages and files you send now are delivered when they sign in.`;
+    }
     list.append(el("li", "msg-system", hint));
     return;
   }
@@ -311,10 +388,11 @@ function transferNote(t) {
   switch (t.stage) {
     case "sending": return `Sending to ${who}: ${pct}%`;
     case "awaiting_confirmation": return `Sent. Waiting for ${who} to verify the checksum.`;
+    case "queued": return `Stored on the server. ${who} gets it when they sign in.`;
     case "receiving": return `Receiving from ${who}: ${pct}%`;
     case "verified":
       if (t.direction === "send") return `Delivered to ${who}. SHA-256 verified.`;
-      if (t.saved_path) return `Verified and saved to ${t.saved_path}`;
+      if (t.saved_path) return "Received. Click Download to save it.";
       return t.error ? t.error : "Verified.";
     case "failed": return `Failed: ${t.error || "unknown error"}`;
     default: return t.stage || "";
@@ -323,9 +401,10 @@ function transferNote(t) {
 
 // The shorter wording used inside the conversation.
 function cardNote(t) {
+  if (t.stage === "queued") return ""; // the Sent receipt already says it
   if (t.stage === "verified") {
     if (t.error) return t.error;
-    return t.direction === "send" ? "Delivered. SHA-256 verified." : "Received. SHA-256 verified.";
+    return t.direction === "send" ? "SHA-256 verified." : "Received. SHA-256 verified.";
   }
   return transferNote(t);
 }
@@ -367,7 +446,7 @@ function buildPhotoBody(msg, refs) {
   const t = msg.t;
   const box = el("div", "photo");
   const src = photoSource(msg);
-  const inProgress = t.stage !== "verified" && t.stage !== "failed";
+  const inProgress = t.stage !== "verified" && t.stage !== "failed" && t.stage !== "queued";
   if (src) {
     const link = el("a", "photo-link");
     link.href = src;
@@ -391,12 +470,21 @@ function buildPhotoBody(msg, refs) {
     box.append(ph);
   }
   if (inProgress) box.append(progressBar(t, refs));
+  if (!msg.self && t.stage === "verified" && t.saved_path) box.append(downloadLink(t));
   if (t.stage === "failed") {
     box.classList.add("is-failed");
     refs.note = el("div", "file-note", transferNote(t));
     box.append(refs.note);
   }
   return box;
+}
+
+// The browser saves the file only when the user clicks; until then it stays in the client's private inbox.
+function downloadLink(t) {
+  const dl = el("a", "file-dl", "Download");
+  dl.href = downloadUrl(t.saved_path, false);
+  dl.setAttribute("download", t.filename);
+  return dl;
 }
 
 function buildCardBody(msg, refs) {
@@ -408,15 +496,10 @@ function buildCardBody(msg, refs) {
   const info = el("div", "file-info");
   info.append(el("div", "file-name", t.filename));
   info.append(el("div", "file-meta", `${formatBytes(t.total || 0)}, stream ${t.stream_id}`));
-  if (t.stage !== "verified") info.append(progressBar(t, refs));
+  if (t.stage !== "verified" && t.stage !== "queued") info.append(progressBar(t, refs));
   refs.note = el("div", "file-note", cardNote(t));
   info.append(refs.note);
-  if (!msg.self && t.stage === "verified" && t.saved_path) {
-    const dl = el("a", "file-dl", "Download");
-    dl.href = downloadUrl(t.saved_path, false);
-    dl.setAttribute("download", baseName(t.saved_path));
-    info.append(dl);
-  }
+  if (!msg.self && t.stage === "verified" && t.saved_path) info.append(downloadLink(t));
   card.append(info);
   return card;
 }
@@ -431,6 +514,7 @@ function buildFileNode(msg) {
   );
   const refs = {};
   li.append(head, isPhoto(msg) ? buildPhotoBody(msg, refs) : buildCardBody(msg, refs));
+  if (msg.showReceipt && msg.t.stage !== "failed" && msg.t.stage !== "sending") li.append(receiptNode(msg.receipt));
   msg.node = li;
   msg.refs = refs;
   return li;
@@ -531,12 +615,12 @@ function renderStats(s) {
 // ---------------------------------------------------------------------------
 
 function applyState(ev) {
-  const previousUser = state.userId;
+  const previousUser = state.username;
   state.phase = ev.state || "DISCONNECTED";
   if (state.phase === "ONLINE") {
     state.userId = ev.user_id || 0;
     state.username = ev.username || "";
-    if (previousUser && previousUser !== state.userId) {
+    if (previousUser && previousUser !== state.username) { // a different person signed in on this client
       resetConversations();
       state.transfers.clear();
     }
@@ -558,10 +642,13 @@ function handleEvent(ev) {
     case "state": applyState(ev); break;
     case "peers":
       state.peers = ev.peers || [];
+      if (ev.users) state.users = ev.users;
       renderPeers();
       renderTabs();
+      if (state.convs.get(state.active)?.messages.length === 0) renderMessages();
       break;
     case "chat": addChat(ev); break;
+    case "receipt": applyReceipt(ev); break;
     case "file_progress": {
       const t = ev.progress;
       if (!t) break;
@@ -623,9 +710,9 @@ async function sendFiles(files) {
     }
     try {
       const base64 = await readFileAsBase64(file);
-      const res = await api("/api/file", { target_id: conv.peerId, filename: file.name, base64_data: base64 });
+      const res = await api("/api/file", { target_name: conv.name, filename: file.name, base64_data: base64 });
       if (IMAGE_EXT.test(file.name)) {
-        attachPreview(`send:${conv.peerId}:${res.stream_id}`, URL.createObjectURL(file));
+        attachPreview(`send:${res.stream_id}`, URL.createObjectURL(file));
       }
     } catch (err) {
       errorBox.textContent = `${file.name}: ${err.message}`;
@@ -725,7 +812,8 @@ function bindActions() {
     const conv = state.convs.get(state.active);
     $("composer-error").textContent = "";
     try {
-      await api("/api/chat", { target_id: conv ? conv.peerId : BROADCAST, text });
+      const direct = conv && conv.key !== "all";
+      await api("/api/chat", direct ? { target_name: conv.name, text } : { target_id: BROADCAST, text });
       input.value = "";
     } catch (err) {
       $("composer-error").textContent = err.message;
@@ -772,6 +860,9 @@ async function init() {
   renderMessages();
   renderTransfers();
   connectEvents();
+  const seenActive = () => markSeen(state.convs.get(state.active));
+  document.addEventListener("visibilitychange", seenActive);
+  window.addEventListener("focus", seenActive);
 }
 
 document.addEventListener("DOMContentLoaded", init);

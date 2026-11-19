@@ -19,6 +19,7 @@ func main() {
 	udpAddr := flag.String("udp", fmt.Sprintf("0.0.0.0:%d", protocol.DefaultUDPPort), "data-plane (UDP) listen address")
 	loss := flag.Float64("loss", 0, "simulated loss rate for outgoing UDP datagrams, 0..1 (testing only)")
 	timeout := flag.Duration("timeout", protocol.SessionTimeout, "remove a client after this long without UDP packets")
+	spool := flag.String("spool", "", "folder for files sent to offline users (default: a temporary folder, removed on exit)")
 	flag.Parse()
 
 	srv, err := server.NewServer(*tcpAddr, *udpAddr)
@@ -31,6 +32,9 @@ func main() {
 		}
 	}
 	srv.SetDropRate(*loss)
+	if err := srv.SetSpoolDir(*spool); err != nil {
+		log.Fatalf("invalid -spool: %v", err)
+	}
 	if err := srv.Start(); err != nil {
 		log.Fatalf("cannot start server: %v", err)
 	}
@@ -40,6 +44,7 @@ func main() {
 	fmt.Printf("  data plane (UDP):        %s\n", srv.UDPAddr())
 	fmt.Printf("  TLS fingerprint:         %s\n", srv.Fingerprint())
 	fmt.Printf("  clients can pin it with: -pin %s\n", srv.Fingerprint())
+	fmt.Printf("  offline files stored in: %s\n", srv.SpoolDir())
 	if *loss > 0 {
 		fmt.Printf("  simulated UDP loss:      %.0f%%\n", *loss*100)
 	}

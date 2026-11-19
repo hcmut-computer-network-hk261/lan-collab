@@ -91,7 +91,7 @@ const (
 )
 
 // MaxReceiptIDs caps the message IDs in one receipt so it fits in one 1024-byte chunk.
-const maxReceiptIDs = 40
+const MaxReceiptIDs = 40
 
 // Default server ports.
 const (

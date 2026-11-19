@@ -140,6 +140,8 @@ button, input { font: inherit; color: inherit; }
 .peer-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex: none; }
 .peer-name { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .peer-meta { margin-left: auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.is-offline .peer-dot { background: transparent; border: 1.5px solid var(--muted); }
+.is-offline .peer-name { color: var(--muted); font-weight: 450; }
 
 /* Sign-in ------------------------------------------------------------------ */
 
@@ -207,6 +209,14 @@ button, input { font: inherit; color: inherit; }
 .msg.is-self .msg-head { justify-content: flex-end; }
 .msg.is-self .msg-body { background: var(--self); border-color: transparent; }
 .msg-system { align-self: center; color: var(--muted); font-size: 13px; }
+.msg-note { margin-top: 4px; color: var(--muted); font-size: 12px; }
+.msg.is-self .msg-note { text-align: right; }
+.msg-receipt { margin-top: 2px; font-size: 11px; color: var(--muted); text-align: right; }
+.msg-receipt.is-sending { font-style: italic; }
+.msg-receipt.is-delivered::before { content: "\2713\2713 "; }
+.msg-receipt.is-sent::before { content: "\2713 "; }
+.msg-receipt.is-seen { color: var(--cable); font-weight: 600; }
+.msg-receipt.is-seen::before { content: "\2713\2713 "; }
 
 .composer {
   display: flex; gap: 8px;
@@ -306,6 +316,7 @@ button, input { font: inherit; color: inherit; }
 .photo-broken { display: block; padding: 10px 12px; color: var(--danger); font-size: 14px; line-height: 1.4; }
 .photo .bar { margin: 6px 4px 0; }
 .photo .file-note { margin-top: 4px; line-height: 1.4; }
+.photo .file-dl { line-height: 1.4; margin-left: 4px; }
 
 .bar-thin { height: 3px; }
 
