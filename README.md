@@ -16,6 +16,9 @@ streaming protocol on UDP for chat and file transfer.
 | Sign-in and presence | TCP+TLS on port 9000. `HELLO`, `AUTH_REQ`, `AUTH_RES`. A new username is registered on first sign-in. The server keeps each user's IP, ports and session key, and pushes `PEER_UPDATE` to everyone when someone joins or leaves. |
 | Chat | Broadcast and direct messages over UDP port 9001, relayed by the server. Stream 1 is delivered in order and never waits for file data (no head-of-line blocking). |
 | Reliable file transfer | Files are cut into 1024-byte chunks, sent on their own stream with Selective Repeat (individual ACKs), a dynamic RTT estimator, fast retransmit, flow control (`rwnd`) and CUBIC congestion control, and checked with SHA-256 at the receiver. |
+| Offline delivery | Messages and files sent to a user who is offline are kept by the server (messages in memory, files on disk) and delivered when that user signs in, like a messenger app. The sender sees `Stored on the server`, then `Delivered`. Up to 200 messages and 256 MB of files per user, kept for 7 days. |
+| Read receipts | Every direct message and file shows **Sent** (the server has it), **Delivered** (it reached the other person's app) and **Seen** (they opened the conversation). Receipts for a sender who is offline wait on the server. The receiver sees a file only once it has fully arrived and passed its SHA-256 check. |
+| Save on demand | Received files wait in a private temporary inbox that is deleted when the client exits. In the browser, **Download** saves a file through the browser's normal download; in the console, `/save <file>` copies it to the `-downloads` folder. |
 | Resilience | Heartbeats every 3 s, a 10 s session timeout, per-client goroutines with `recover()`, socket errors handled without crashing the server. A transfer fails with a clear message when the other user leaves, and one slow recipient never delays other users' files. |
 | Security | TLS on the control channel (optional certificate pinning). Every UDP payload is sealed with AES-256-GCM using a per-client session key; the header is authenticated as additional data. |
 | User interface | Browser UI (HTML, CSS and vanilla JavaScript only) with online users, chat tabs, pictures and files shown inside the conversation, progress bars, a download link for received files and live link statistics. A console UI is also included. |
@@ -75,6 +78,7 @@ Stop it with `Ctrl+C`.
 | `-udp` | `0.0.0.0:9001` | Data-plane listen address |
 | `-timeout` | `10s` | Remove a client after this long without UDP packets |
 | `-loss` | `0` | Drop this fraction (0 to 1) of outgoing UDP datagrams, for demos |
+| `-spool` | temporary folder | Folder for files sent to offline users. The default temporary folder is removed when the server stops. |
 
 ## 4. Connect clients
 
@@ -105,6 +109,10 @@ go run ./cmd/client
    user signs out during a transfer, it is marked as failed (`bob went offline`). An
    incoming transfer that receives no data for 30 seconds is also failed
    (`no data received for 30s`), so a progress bar never stays stuck.
+8. Offline users are listed under the online ones, with a hollow dot. Open their
+   conversation and write or attach files as usual: the server keeps everything and delivers
+   it when they sign in. Their side shows `Sent while you were offline`; yours shows
+   `Stored on the server`, then `Delivered` once they have verified the file.
 
 To run several clients on one machine, start the command again in another terminal. If port
 8080 is busy, the client uses 8081, 8082 and so on, and prints the address.
@@ -119,9 +127,9 @@ Type text to message everyone. Other commands:
 
 | Command | Action |
 | --- | --- |
-| `/msg <id> <text>` | Direct message to user `<id>` |
-| `/send <id> <path>` | Send a file to user `<id>` |
-| `/peers` | List online users with their IDs |
+| `/msg <user> <text>` | Direct message; `<user>` is an ID or a name, and an offline name gets it on sign-in |
+| `/send <user> <path>` | Send a file; an offline user receives it when they sign in |
+| `/peers` | List online users with their IDs, and offline accounts |
 | `/transfers` | List file transfers and their state |
 | `/stats` | Show RTT, RTO, cwnd, receive window and retransmissions |
 | `/help`, `/quit` | Help, sign out and exit |
@@ -173,6 +181,7 @@ go test -v ./tests -run "TestControlFraming|TestUDPPacket|TestFileChunker"   # p
 go test -v ./tests -run "TestRTT|TestCubic|TestRDT"                          # transport
 go test -v ./tests -run "TestServer|TestAbrupt|TestHeartbeat|TestDuplicate"  # server resilience
 go test -v ./tests -run "LeavesMidTransfer|TestPeerLeaving|TestRelayOverflow|TestSlowRecipient"  # failed transfers, slow recipients
+go test -v ./tests -run "Offline|UsersList"                                   # offline messages and files
 go test -v ./tests -run "TestFileInitArriving|TestStalledIncoming|TestSlowButSteady"   # late FILE_INIT, inactivity timeout
 go test -v ./tests -run "TestHTTPBridge"                                    # web bridge, downloads
 go test -race -v ./tests -run "TestConcurrentTwentyClientsEndToEnd"          # 20 clients
@@ -257,5 +266,6 @@ call the controller and render its events.
   it sees the transfer fail (`went offline`) even though the server may still hold some
   packets.
 - There is no automatic reconnect: after a disconnect the UI shows `Offline` and you sign in
-  again.
+  again. An interrupted transfer is not resumed; send it again.
+- Stored offline messages and files are lost when the server restarts, like the accounts.
 - By default the TLS certificate is not verified; use `-pin` on untrusted networks.
