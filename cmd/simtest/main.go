@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"text/tabwriter"
 	"time"
@@ -81,15 +82,24 @@ func run() int {
 	loginErrs := make([]error, n)
 	start := time.Now()
 	var wg sync.WaitGroup
+	loginSlots := make(chan struct{}, 64) // at most 64 sign-ins at once, so the OS listen backlog never overflows
 	for i := 0; i < n; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			c := client.NewController(host, tcpPort, udpPort)
-			c.SetDropRate(*loss)
-			c.SetDownloadDir(filepath.Join(tmp, fmt.Sprintf("sim_%02d", i+1)))
-			loginErrs[i] = c.ConnectAndLogin(fmt.Sprintf("sim_%02d", i+1), "pass123")
-			ctrls[i] = c
+			loginSlots <- struct{}{}
+			defer func() { <-loginSlots }()
+			for attempt := 1; ; attempt++ {
+				c := client.NewController(host, tcpPort, udpPort)
+				c.SetDropRate(*loss)
+				c.SetDownloadDir(filepath.Join(tmp, fmt.Sprintf("sim_%02d", i+1)))
+				err := c.ConnectAndLogin(fmt.Sprintf("sim_%02d", i+1), "pass123")
+				ctrls[i], loginErrs[i] = c, err
+				if err == nil || attempt == 10 || !strings.Contains(err.Error(), "cannot reach server") {
+					break
+				}
+				time.Sleep(time.Duration(attempt) * 100 * time.Millisecond) // refused under load: back off and retry
+			}
 		}(i)
 	}
 	wg.Wait()

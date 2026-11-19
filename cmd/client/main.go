@@ -23,12 +23,20 @@ func main() {
 	user := flag.String("user", "", "username (console UI prompts if empty; browser UI signs in automatically if set with -pass)")
 	pass := flag.String("pass", "", "password")
 	pin := flag.String("pin", "", "expected SHA-256 fingerprint of the server TLS certificate (printed by the server)")
-	downloads := flag.String("downloads", "downloads", "directory for received files")
+	downloads := flag.String("downloads", "downloads", "folder where the console /save command puts received files (the browser UI uses the browser's own download)")
 	loss := flag.Float64("loss", 0, "simulated loss rate for outgoing UDP datagrams, 0..1 (testing only)")
 	flag.Parse()
 
 	ctrl := client.NewController(*serverHost, *tcpPort, *udpPort)
-	ctrl.SetDownloadDir(*downloads)
+	// Received files wait in a private temporary inbox; they are kept only when the user saves them.
+	inbox, err := os.MkdirTemp("", "lancollab-inbox-")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cannot create the inbox folder:", err)
+		os.Exit(1)
+	}
+	defer os.RemoveAll(inbox)
+	ctrl.SetDownloadDir(inbox)
+	ctrl.SetSaveDir(*downloads)
 	ctrl.SetServerFingerprint(*pin)
 	ctrl.SetDropRate(*loss)
 
@@ -36,12 +44,14 @@ func main() {
 	case "console":
 		if err := client.RunConsole(ctrl, os.Stdin, os.Stdout, *user, *pass); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
+			os.RemoveAll(inbox)
 			os.Exit(1)
 		}
 	case "http":
 		bridge, err := startBridge(*httpAddr, ctrl)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "cannot start the browser UI:", err)
+			os.RemoveAll(inbox)
 			os.Exit(1)
 		}
 		fmt.Printf("LanCollab client: open http://%s in your browser (server %s).\n", bridge.Addr(), ctrl.ServerAddress())
@@ -60,6 +70,7 @@ func main() {
 		_ = bridge.Close()
 	default:
 		fmt.Fprintf(os.Stderr, "unknown -ui %q (use http or console)\n", *ui)
+		os.RemoveAll(inbox)
 		os.Exit(2)
 	}
 }
