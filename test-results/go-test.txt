@@ -10,14 +10,14 @@
 === RUN   TestHTTPBridgeLossEndpointValidatesRate
 --- PASS: TestHTTPBridgeLossEndpointValidatesRate (0.01s)
 === RUN   TestServerResilienceAndHeartbeatTimeout
-[server] 2026/10/31 15:23:30.284305 control plane (TCP+TLS) on 127.0.0.1:65038, data plane (UDP) on 127.0.0.1:53440
-[server] 2026/10/31 15:23:30.284305 TLS certificate SHA-256 fingerprint: a5382b80c219c41a01809fdef554a9e6d680d3af5db9781307081aa0b1fcfce8
-[server] 2026/10/31 15:23:30.292389 "alice" signed in as #1 from 127.0.0.1:65039 (UDP port 52001)
-[server] 2026/10/31 15:23:30.301100 sign-in refused for "alice" from 127.0.0.1:65040: wrong password for this username
-[server] 2026/10/31 15:23:30.301788 #1 left: connection closed by client (EOF)
+[server] 2026/11/19 23:48:30.459394 control plane (TCP+TLS) on 127.0.0.1:23341, data plane (UDP) on 127.0.0.1:52506
+[server] 2026/11/19 23:48:30.460389 TLS certificate SHA-256 fingerprint: 390718d556309f00f56457065d15ed20d5a852b607a603f97ed96d3ef1145c2f
+[server] 2026/11/19 23:48:30.467379 "alice" signed in as #1 from 127.0.0.1:23342 (UDP port 52001)
+[server] 2026/11/19 23:48:30.474529 sign-in refused for "alice" from 127.0.0.1:23343: wrong password for this username
+[server] 2026/11/19 23:48:30.475561 #1 left: connection closed by client (EOF)
 --- PASS: TestServerResilienceAndHeartbeatTimeout (0.02s)
 === RUN   TestAbruptDisconnectIsDetectedAndPeersNotified
---- PASS: TestAbruptDisconnectIsDetectedAndPeersNotified (0.01s)
+--- PASS: TestAbruptDisconnectIsDetectedAndPeersNotified (0.02s)
 === RUN   TestHeartbeatTimeoutRemovesSilentClient
 --- PASS: TestHeartbeatTimeoutRemovesSilentClient (1.60s)
 === RUN   TestServerSurvivesGarbageAndOversizedControlFrames
@@ -27,62 +27,74 @@
 === RUN   TestLogoutThenSameUserCanSignInAgain
 --- PASS: TestLogoutThenSameUserCanSignInAgain (0.03s)
 === RUN   TestConcurrentTwentyClientsEndToEnd
-[server] 2026/10/31 15:23:32.003829 control plane (TCP+TLS) on 127.0.0.1:65065, data plane (UDP) on 127.0.0.1:53451
-[server] 2026/10/31 15:23:32.004371 TLS certificate SHA-256 fingerprint: 8afbc0893f30d83d90eab4e256d825b5062dd22d1f3c291a9623520cbf159563
-[server] 2026/10/31 15:23:32.009989 "user_01" signed in as #1 from 127.0.0.1:65066 (UDP port 53452)
-[server] 2026/10/31 15:23:32.016598 "user_02" signed in as #2 from 127.0.0.1:65067 (UDP port 53453)
-[server] 2026/10/31 15:23:32.023660 "user_03" signed in as #3 from 127.0.0.1:65068 (UDP port 53454)
-[server] 2026/10/31 15:23:32.031193 "user_04" signed in as #4 from 127.0.0.1:65069 (UDP port 53455)
-[server] 2026/10/31 15:23:32.038271 "user_05" signed in as #5 from 127.0.0.1:65070 (UDP port 53456)
-[server] 2026/10/31 15:23:32.046852 "user_06" signed in as #6 from 127.0.0.1:65071 (UDP port 53457)
-[server] 2026/10/31 15:23:32.055772 "user_07" signed in as #7 from 127.0.0.1:65072 (UDP port 53458)
-[server] 2026/10/31 15:23:32.062573 "user_08" signed in as #8 from 127.0.0.1:65073 (UDP port 53459)
-[server] 2026/10/31 15:23:32.069970 "user_09" signed in as #9 from 127.0.0.1:65074 (UDP port 53460)
-[server] 2026/10/31 15:23:32.078200 "user_10" signed in as #10 from 127.0.0.1:65075 (UDP port 53461)
-[server] 2026/10/31 15:23:32.084796 "user_11" signed in as #11 from 127.0.0.1:65076 (UDP port 53462)
-[server] 2026/10/31 15:23:32.093325 "user_12" signed in as #12 from 127.0.0.1:65077 (UDP port 53463)
-[server] 2026/10/31 15:23:32.102433 "user_13" signed in as #13 from 127.0.0.1:65078 (UDP port 53464)
-[server] 2026/10/31 15:23:32.110404 "user_14" signed in as #14 from 127.0.0.1:65079 (UDP port 53465)
-[server] 2026/10/31 15:23:32.120048 "user_15" signed in as #15 from 127.0.0.1:65080 (UDP port 53466)
-[server] 2026/10/31 15:23:32.128085 "user_16" signed in as #16 from 127.0.0.1:65081 (UDP port 53467)
-[server] 2026/10/31 15:23:32.137787 "user_17" signed in as #17 from 127.0.0.1:65082 (UDP port 53468)
-[server] 2026/10/31 15:23:32.146564 "user_18" signed in as #18 from 127.0.0.1:65083 (UDP port 53469)
-[server] 2026/10/31 15:23:32.155329 "user_19" signed in as #19 from 127.0.0.1:65084 (UDP port 53470)
-[server] 2026/10/31 15:23:32.164324 "user_20" signed in as #20 from 127.0.0.1:65085 (UDP port 53471)
-[server] 2026/10/31 15:23:32.182153 #20 left: signed out
-[server] 2026/10/31 15:23:32.183201 #19 left: signed out
-[server] 2026/10/31 15:23:32.187425 #18 left: signed out
-[server] 2026/10/31 15:23:32.189004 #17 left: signed out
-[server] 2026/10/31 15:23:32.191087 #16 left: signed out
-[server] 2026/10/31 15:23:32.194096 #15 left: signed out
-[server] 2026/10/31 15:23:32.195149 #14 left: signed out
-[server] 2026/10/31 15:23:32.196283 #13 left: signed out
-[server] 2026/10/31 15:23:32.197532 #12 left: signed out
-[server] 2026/10/31 15:23:32.200135 #11 left: signed out
-[server] 2026/10/31 15:23:32.201360 #10 left: signed out
-[server] 2026/10/31 15:23:32.201908 #9 left: signed out
-[server] 2026/10/31 15:23:32.202448 #8 left: signed out
-[server] 2026/10/31 15:23:32.203509 #7 left: signed out
-[server] 2026/10/31 15:23:32.204040 #6 left: signed out
-[server] 2026/10/31 15:23:32.204580 #5 left: signed out
-[server] 2026/10/31 15:23:32.205125 #4 left: signed out
-[server] 2026/10/31 15:23:32.206892 #3 left: signed out
-[server] 2026/10/31 15:23:32.207497 #2 left: signed out
-[server] 2026/10/31 15:23:32.208022 #1 left: signed out
---- PASS: TestConcurrentTwentyClientsEndToEnd (0.21s)
+[server] 2026/11/19 23:48:32.189715 control plane (TCP+TLS) on 127.0.0.1:23368, data plane (UDP) on 127.0.0.1:52517
+[server] 2026/11/19 23:48:32.189715 TLS certificate SHA-256 fingerprint: d187812132bdb182c0a2e892e15bdabe4ad69e8ccd5c3bbc45d077bddb5dc9ca
+[server] 2026/11/19 23:48:32.196941 "user_01" signed in as #1 from 127.0.0.1:23369 (UDP port 52518)
+[server] 2026/11/19 23:48:32.204074 "user_02" signed in as #2 from 127.0.0.1:23370 (UDP port 52519)
+[server] 2026/11/19 23:48:32.210268 "user_03" signed in as #3 from 127.0.0.1:23371 (UDP port 52520)
+[server] 2026/11/19 23:48:32.217978 "user_04" signed in as #4 from 127.0.0.1:23372 (UDP port 52521)
+[server] 2026/11/19 23:48:32.225016 "user_05" signed in as #5 from 127.0.0.1:23373 (UDP port 52522)
+[server] 2026/11/19 23:48:32.235547 "user_06" signed in as #6 from 127.0.0.1:23374 (UDP port 52523)
+[server] 2026/11/19 23:48:32.242728 "user_07" signed in as #7 from 127.0.0.1:23375 (UDP port 52524)
+[server] 2026/11/19 23:48:32.251850 "user_08" signed in as #8 from 127.0.0.1:23376 (UDP port 52525)
+[server] 2026/11/19 23:48:32.260036 "user_09" signed in as #9 from 127.0.0.1:23377 (UDP port 52526)
+[server] 2026/11/19 23:48:32.267877 "user_10" signed in as #10 from 127.0.0.1:23378 (UDP port 52527)
+[server] 2026/11/19 23:48:32.276834 "user_11" signed in as #11 from 127.0.0.1:23379 (UDP port 52528)
+[server] 2026/11/19 23:48:32.285119 "user_12" signed in as #12 from 127.0.0.1:23380 (UDP port 52529)
+[server] 2026/11/19 23:48:32.293087 "user_13" signed in as #13 from 127.0.0.1:23381 (UDP port 52530)
+[server] 2026/11/19 23:48:32.301345 "user_14" signed in as #14 from 127.0.0.1:23382 (UDP port 52531)
+[server] 2026/11/19 23:48:32.311246 "user_15" signed in as #15 from 127.0.0.1:23383 (UDP port 52532)
+[server] 2026/11/19 23:48:32.321290 "user_16" signed in as #16 from 127.0.0.1:23384 (UDP port 52533)
+[server] 2026/11/19 23:48:32.331513 "user_17" signed in as #17 from 127.0.0.1:23385 (UDP port 52534)
+[server] 2026/11/19 23:48:32.341439 "user_18" signed in as #18 from 127.0.0.1:23386 (UDP port 52535)
+[server] 2026/11/19 23:48:32.351055 "user_19" signed in as #19 from 127.0.0.1:23387 (UDP port 52536)
+[server] 2026/11/19 23:48:32.361282 "user_20" signed in as #20 from 127.0.0.1:23388 (UDP port 52537)
+[server] 2026/11/19 23:48:32.380459 #20 left: signed out
+[server] 2026/11/19 23:48:32.381511 #19 left: signed out
+[server] 2026/11/19 23:48:32.387324 #18 left: signed out
+[server] 2026/11/19 23:48:32.388360 #17 left: signed out
+[server] 2026/11/19 23:48:32.391068 #16 left: signed out
+[server] 2026/11/19 23:48:32.394182 #15 left: signed out
+[server] 2026/11/19 23:48:32.395730 #14 left: signed out
+[server] 2026/11/19 23:48:32.397881 #13 left: signed out
+[server] 2026/11/19 23:48:32.401240 #12 left: signed out
+[server] 2026/11/19 23:48:32.401765 #11 left: signed out
+[server] 2026/11/19 23:48:32.403346 #10 left: signed out
+[server] 2026/11/19 23:48:32.405970 #9 left: signed out
+[server] 2026/11/19 23:48:32.406711 #8 left: signed out
+[server] 2026/11/19 23:48:32.407781 #7 left: signed out
+[server] 2026/11/19 23:48:32.408317 #6 left: signed out
+[server] 2026/11/19 23:48:32.410188 #5 left: signed out
+[server] 2026/11/19 23:48:32.410709 #4 left: signed out
+[server] 2026/11/19 23:48:32.411754 #3 left: signed out
+[server] 2026/11/19 23:48:32.412274 #2 left: signed out
+[server] 2026/11/19 23:48:32.412795 #1 left: signed out
+--- PASS: TestConcurrentTwentyClientsEndToEnd (0.23s)
 === RUN   TestDirectMessageReachesOnlyTarget
 --- PASS: TestDirectMessageReachesOnlyTarget (0.04s)
 === RUN   TestLargeFileUnderLossIsByteExactAndChatOvertakesIt
---- PASS: TestLargeFileUnderLossIsByteExactAndChatOvertakesIt (0.74s)
+--- PASS: TestLargeFileUnderLossIsByteExactAndChatOvertakesIt (0.26s)
 === RUN   TestTwentyClientsMeshUnderPacketLoss
---- PASS: TestTwentyClientsMeshUnderPacketLoss (0.44s)
+--- PASS: TestTwentyClientsMeshUnderPacketLoss (0.53s)
 === RUN   TestFileInitArrivingAfterSenderLeftFailsAtOnce
---- PASS: TestFileInitArrivingAfterSenderLeftFailsAtOnce (0.26s)
+--- PASS: TestFileInitArrivingAfterSenderLeftFailsAtOnce (0.45s)
 === RUN   TestStalledIncomingTransferTimesOut
     late_file_init_test.go:99: bob gave up 2s after alice's link died: no data received for 1s
 --- PASS: TestStalledIncomingTransferTimesOut (2.02s)
 === RUN   TestSlowButSteadyTransferDoesNotTimeOut
---- PASS: TestSlowButSteadyTransferDoesNotTimeOut (7.70s)
+--- PASS: TestSlowButSteadyTransferDoesNotTimeOut (4.15s)
+=== RUN   TestUsersListIncludesOfflineAccounts
+--- PASS: TestUsersListIncludesOfflineAccounts (0.03s)
+=== RUN   TestOfflineChatIsDeliveredOnSignIn
+--- PASS: TestOfflineChatIsDeliveredOnSignIn (0.14s)
+=== RUN   TestOfflineFileIsDeliveredOnSignInAndSenderIsTold
+--- PASS: TestOfflineFileIsDeliveredOnSignInAndSenderIsTold (0.16s)
+=== RUN   TestOfflineFileIsDeliveredAfterSenderLeft
+--- PASS: TestOfflineFileIsDeliveredAfterSenderLeft (0.12s)
+=== RUN   TestOfflineFileOverMailboxLimitIsRefused
+--- PASS: TestOfflineFileOverMailboxLimitIsRefused (0.05s)
+=== RUN   TestOfflineUploadIsDiscardedWhenSenderLeaves
+--- PASS: TestOfflineUploadIsDiscardedWhenSenderLeaves (0.67s)
 === RUN   TestControlFraming
 === RUN   TestControlFraming/single_frame_round-trip
 === RUN   TestControlFraming/multiple_sequential_frames_in_one_stream
@@ -114,7 +126,7 @@
 === RUN   TestUDPPacketAndCRC16/marshal,_unmarshal,_magic_validation,_and_header_bit_flip
 === RUN   TestUDPPacketAndCRC16/exhaustive_single-bit_flip_rejection_across_entire_datagram
 === RUN   TestUDPPacketAndCRC16/MTU_size_bounds,_short_packets,_and_random_garbage_fuzzing
---- PASS: TestUDPPacketAndCRC16 (0.08s)
+--- PASS: TestUDPPacketAndCRC16 (0.07s)
     --- PASS: TestUDPPacketAndCRC16/CRC-16/CCITT-FALSE_standard_reference_vector (0.00s)
     --- PASS: TestUDPPacketAndCRC16/marshal,_unmarshal,_magic_validation,_and_header_bit_flip (0.00s)
     --- PASS: TestUDPPacketAndCRC16/exhaustive_single-bit_flip_rejection_across_entire_datagram (0.03s)
@@ -166,7 +178,7 @@
 === RUN   TestRDTSelectiveRepeatAndHoLFree
 --- PASS: TestRDTSelectiveRepeatAndHoLFree (0.01s)
 === RUN   TestRDTChatOvertakesStalledFileStream
---- PASS: TestRDTChatOvertakesStalledFileStream (0.16s)
+--- PASS: TestRDTChatOvertakesStalledFileStream (0.06s)
 === RUN   TestRDTRetransmitsOnlyTheLostPacket
 --- PASS: TestRDTRetransmitsOnlyTheLostPacket (0.00s)
 === RUN   TestRDTDropsCorruptedAndForeignDatagramsAndSuppressesDuplicates
@@ -174,17 +186,23 @@
 === RUN   TestRDTSlowConsumerBackPressureLosesNothing
 --- PASS: TestRDTSlowConsumerBackPressureLosesNothing (0.35s)
 === RUN   TestRDTFastRetransmitKeepsLossyTransferFast
-    rdt_loss_test.go:565: 2 MB at 5% loss took 1s (105 retransmissions)
---- PASS: TestRDTFastRetransmitKeepsLossyTransferFast (1.00s)
+    rdt_loss_test.go:565: 2 MB at 5% loss took 594ms (106 retransmissions)
+--- PASS: TestRDTFastRetransmitKeepsLossyTransferFast (0.60s)
+=== RUN   TestReceiptsSentDeliveredSeenOnline
+--- PASS: TestReceiptsSentDeliveredSeenOnline (0.03s)
+=== RUN   TestReceiptsForOfflineRecipientAndOfflineSender
+--- PASS: TestReceiptsForOfflineRecipientAndOfflineSender (0.27s)
+=== RUN   TestReceiptsForOfflineFile
+--- PASS: TestReceiptsForOfflineFile (0.08s)
 === RUN   TestSenderLeavesMidTransferFailsReceiverSide
---- PASS: TestSenderLeavesMidTransferFailsReceiverSide (0.06s)
+--- PASS: TestSenderLeavesMidTransferFailsReceiverSide (0.07s)
 === RUN   TestPeerLeavingFailsTransferAwaitingConfirmation
 --- PASS: TestPeerLeavingFailsTransferAwaitingConfirmation (0.04s)
 === RUN   TestRelayOverflowFailsOnlyTheOverflowingTransfer
 --- PASS: TestRelayOverflowFailsOnlyTheOverflowingTransfer (0.09s)
 === RUN   TestReceiverLeavesMidTransferFailsSender
---- PASS: TestReceiverLeavesMidTransferFailsSender (0.06s)
+--- PASS: TestReceiverLeavesMidTransferFailsSender (0.05s)
 === RUN   TestSlowRecipientDoesNotStallOthers
---- PASS: TestSlowRecipientDoesNotStallOthers (0.58s)
+--- PASS: TestSlowRecipientDoesNotStallOthers (0.57s)
 PASS
-ok  	lancollab/tests	18.335s
+ok  	lancollab/tests	15.762s

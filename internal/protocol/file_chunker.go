@@ -18,7 +18,7 @@ type FileInitMeta struct {
 	SHA256      string `json:"sha256"`
 	To          string `json:"to,omitempty"`
 	From        string `json:"from,omitempty"`
-	Info        string `json:"info,omitempty"`
+	ID          string `json:"info,omitempty"`
 }
 
 // Reassembly errors.
