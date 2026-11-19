@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -34,6 +36,7 @@ const (
 	EventPeers        = "peers"
 	EventChat         = "chat"
 	EventFileProgress = "file_progress"
+	EventReceipt      = "receipt" // sent / delivered / seen for messages and files this user sent
 	EventStats        = "stats"
 	EventError        = "error"
 )
@@ -48,6 +51,7 @@ const (
 	StageReceiving       = "receiving"
 	StageVerified        = "verified"
 	StageFailed          = "failed"
+	StageQueued          = "queued" // stored on the server until the offline recipient signs in
 )
 
 // MaxChatTextBytes limits one chat message (UTF-8 bytes).
@@ -82,6 +86,8 @@ type TransferProgress struct {
 	Error       string `json:"error,omitempty"`
 	SavedPath   string `json:"saved_path,omitempty"`
 	StartedAt   int64  `json:"started_at,omitempty"`
+	MsgID       string `json:"msg_id,omitempty"`  // ID used by receipts
+	Receipt     string `json:"receipt,omitempty"` // sent / delivered / seen (outgoing files only)
 }
 
 // ClientEvent is published to every subscriber (console, browser via SSE, tests).
@@ -98,6 +104,13 @@ type ClientEvent struct {
 	Direct   bool                `json:"direct,omitempty"`
 	Self     bool                `json:"self,omitempty"`
 	TS       int64               `json:"ts,omitempty"`
+	Users    []string            `json:"users,omitempty"`   // every registered username, online or not
+	Peer     string              `json:"peer,omitempty"`    // the other person's name in a direct conversation
+	Stored   bool                `json:"stored,omitempty"`  // a message the server kept while this user was offline
+	Queued   bool                `json:"queued,omitempty"`  // a message this user sent to someone offline
+	ID       string              `json:"id,omitempty"`      // a direct message's ID
+	Receipt  string              `json:"receipt,omitempty"` // latest status of a message this user sent
+	IDs      []string            `json:"ids,omitempty"`     // messages or files a receipt event applies to
 	Progress *TransferProgress   `json:"progress,omitempty"`
 	Stats    *transport.RDTStats `json:"stats,omitempty"`
 	Error    string              `json:"error,omitempty"`
@@ -141,16 +154,19 @@ type Controller struct {
 	lastUser      string
 	sess          *session
 	peers         []protocol.PeerInfo
+	users         []string // every registered username (online and offline)
 	transfers     map[string]*TransferProgress
 	transferOrder []string
 	lastEmit      map[string]time.Time
 	recvActivity  map[string]time.Time // last time each incoming transfer received data
 	idleTimeout   time.Duration
-	downloadDir   string
+	downloadDir   string // where received files are kept until the user saves them
+	saveDir       string // where SaveReceived copies a file (console /save)
 	fingerprint   string
 	dropRate      float64
 	subs          map[chan ClientEvent]struct{}
 	history       []ClientEvent
+	unseen        map[string][]string // peer name -> received message/file IDs not yet reported as seen
 }
 
 // NewController creates a disconnected controller for the given server.
@@ -165,11 +181,35 @@ func NewController(serverHost string, tcpPort, udpPort int) *Controller {
 		recvActivity: make(map[string]time.Time),
 		idleTimeout:  DefaultTransferIdleTimeout,
 		downloadDir:  "downloads",
+		saveDir:      "downloads",
 		subs:         make(map[chan ClientEvent]struct{}),
+		unseen:       make(map[string][]string),
 	}
 }
 
-// SetDownloadDir sets where received files are saved (default "downloads").
+// SetSaveDir sets where SaveReceived copies files (default "downloads").
+func (c *Controller) SetSaveDir(dir string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if dir != "" {
+		c.saveDir = dir
+	}
+}
+
+// SaveReceived copies a received file (by name, from the inbox) to the save folder and returns the new path.
+func (c *Controller) SaveReceived(name string) (string, error) {
+	name = filepath.Base(name)
+	c.mu.Lock()
+	inbox, dest := c.downloadDir, c.saveDir
+	c.mu.Unlock()
+	data, err := os.ReadFile(filepath.Join(inbox, name))
+	if err != nil {
+		return "", fmt.Errorf("no received file called %q", name)
+	}
+	return saveDownload(dest, name, data)
+}
+
+// SetDownloadDir sets where received files are kept until the user saves them (default "downloads").
 func (c *Controller) SetDownloadDir(dir string) {
 	c.mu.Lock()
 	if dir != "" {
@@ -336,14 +376,16 @@ func (c *Controller) ConnectAndLogin(username, password string) error {
 		c.transferOrder = nil
 		c.lastEmit = make(map[string]time.Time)
 		c.recvActivity = make(map[string]time.Time)
+		c.unseen = make(map[string][]string)
 	}
 	c.lastUser = username
 	c.sess = s
 	c.state = StateOnline
 	c.lastErr = ""
 	c.peers = sortedPeers(res.Peers)
+	c.users = append([]string(nil), res.Users...)
 	c.emitLocked(ClientEvent{Kind: EventState, State: StateOnline, UserID: s.userID, Username: s.username})
-	c.emitLocked(ClientEvent{Kind: EventPeers, Peers: copyPeers(c.peers)})
+	c.emitLocked(c.peersEventLocked())
 	c.mu.Unlock()
 
 	go c.heartbeatLoop(s)
@@ -386,21 +428,22 @@ func (c *Controller) SendChat(targetID uint16, text string) error {
 	if err != nil {
 		return err
 	}
-	text = strings.TrimSpace(text)
+	text, err = checkChatText(text)
+	if err != nil {
+		return err
+	}
 	switch {
-	case text == "":
-		return errors.New("the message is empty")
-	case len(text) > MaxChatTextBytes:
-		return fmt.Errorf("the message is longer than %d bytes", MaxChatTextBytes)
-	case !utf8.ValidString(text):
-		return errors.New("the message is not valid UTF-8")
 	case targetID == protocol.ServerID || targetID == s.userID:
 		return errors.New("choose another user or everyone as the recipient")
 	case targetID != protocol.BroadcastTarget && !c.peerOnline(targetID):
 		return fmt.Errorf("user #%d is not online", targetID)
 	}
 	ts := time.Now().UnixMilli()
-	body, err := protocol.MarshalJSONCompact(protocol.ChatPayload{From: s.username, Text: text, TS: ts})
+	id := ""
+	if targetID != protocol.BroadcastTarget {
+		id = newMsgID()
+	}
+	body, err := protocol.MarshalJSONCompact(protocol.ChatPayload{From: s.username, Text: text, TS: ts, ID: id})
 	if err != nil {
 		return err
 	}
@@ -411,12 +454,73 @@ func (c *Controller) SendChat(targetID uint16, text string) error {
 		return err
 	}
 	c.mu.Lock()
+	peer := ""
+	if targetID != protocol.BroadcastTarget {
+		peer = c.peerNameLocked(targetID)
+	}
 	c.emitLocked(ClientEvent{
-		Kind: EventChat, Self: true, From: s.username, FromID: s.userID, TargetID: targetID,
-		Text: text, Direct: targetID != protocol.BroadcastTarget, TS: ts,
+		Kind: EventChat, Self: true, From: s.username, FromID: s.userID, TargetID: targetID, Peer: peer,
+		Text: text, Direct: targetID != protocol.BroadcastTarget, TS: ts, ID: id,
 	})
 	c.mu.Unlock()
 	return nil
+}
+
+// SendChatTo sends a direct message by username; an offline user gets it from the server when they sign in.
+func (c *Controller) SendChatTo(name, text string) error {
+	s, err := c.currentSession()
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	id, online := c.peerIDByNameLocked(name)
+	known := c.knownUserLocked(name)
+	c.mu.Unlock()
+	switch {
+	case name == s.username:
+		return errors.New("choose another user or everyone as the recipient")
+	case online:
+		return c.SendChat(id, text)
+	case !known:
+		return fmt.Errorf("there is no user called %q", name)
+	}
+	text, err = checkChatText(text)
+	if err != nil {
+		return err
+	}
+	ts := time.Now().UnixMilli()
+	msgID := newMsgID()
+	body, err := protocol.MarshalJSONCompact(protocol.ChatPayload{From: s.username, Text: text, TS: ts, To: name, ID: msgID})
+	if err != nil {
+		return err
+	}
+	if len(body) > protocol.MaxChunkSize {
+		return errors.New("the message is too long once encoded")
+	}
+	if err := c.sendOnChatStream(s, protocol.MsgChat, protocol.ServerID, body); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.emitLocked(ClientEvent{
+		Kind: EventChat, Self: true, From: s.username, FromID: s.userID, Peer: name,
+		Text: text, Direct: true, Queued: true, TS: ts, ID: msgID,
+	})
+	c.mu.Unlock()
+	return nil
+}
+
+// checkChatText trims a chat message and rejects empty, oversized or invalid text.
+func checkChatText(text string) (string, error) {
+	text = strings.TrimSpace(text)
+	switch {
+	case text == "":
+		return "", errors.New("the message is empty")
+	case len(text) > MaxChatTextBytes:
+		return "", fmt.Errorf("the message is longer than %d bytes", MaxChatTextBytes)
+	case !utf8.ValidString(text):
+		return "", errors.New("the message is not valid UTF-8")
+	}
+	return text, nil
 }
 
 // SendFile starts a background transfer to targetID on a new stream and returns that stream ID.
@@ -431,12 +535,43 @@ func (c *Controller) SendFile(targetID uint16, filename string, data []byte) (ui
 	if !c.peerOnline(targetID) {
 		return 0, fmt.Errorf("user #%d is not online", targetID)
 	}
+	c.mu.Lock()
+	name := c.peerNameLocked(targetID)
+	c.mu.Unlock()
+	return c.startUpload(s, targetID, name, "", filename, data)
+}
+
+// SendFileTo sends a file by username; for an offline user the server stores it and delivers it on sign-in.
+func (c *Controller) SendFileTo(name, filename string, data []byte) (uint16, error) {
+	s, err := c.currentSession()
+	if err != nil {
+		return 0, err
+	}
+	c.mu.Lock()
+	id, online := c.peerIDByNameLocked(name)
+	known := c.knownUserLocked(name)
+	c.mu.Unlock()
+	switch {
+	case name == s.username:
+		return 0, errors.New("files can only be sent to one other user")
+	case online:
+		return c.SendFile(id, filename, data)
+	case !known:
+		return 0, fmt.Errorf("there is no user called %q", name)
+	}
+	return c.startUpload(s, protocol.ServerID, name, name, filename, data)
+}
+
+// startUpload registers a send transfer and uploads it in the background; target 0 with to set means "store for to".
+func (c *Controller) startUpload(s *session, target uint16, peerName, to, filename string, data []byte) (uint16, error) {
 	if int64(len(data)) > protocol.MaxFileSize {
 		return 0, fmt.Errorf("the file is larger than %d MiB", protocol.MaxFileSize>>20)
 	}
 	name := sanitizeFilename(filename)
 	meta, chunks := protocol.SplitFileChunks(data)
 	meta.Filename = name
+	meta.To = to
+	meta.ID = newMsgID()
 	initBody, err := protocol.MarshalJSONCompact(meta)
 	if err != nil {
 		return 0, err
@@ -446,12 +581,12 @@ func (c *Controller) SendFile(targetID uint16, filename string, data []byte) (ui
 
 	c.mu.Lock()
 	c.putTransferLocked(key, &TransferProgress{
-		StreamID: stream, PeerID: targetID, PeerName: c.peerNameLocked(targetID),
-		Filename: name, Direction: DirectionSend, Total: meta.Size, Stage: StageSending,
+		StreamID: stream, PeerID: target, PeerName: peerName,
+		Filename: name, Direction: DirectionSend, Total: meta.Size, Stage: StageSending, MsgID: meta.ID,
 	})
 	c.mu.Unlock()
 
-	go c.runUpload(s, key, targetID, stream, initBody, chunks)
+	go c.runUpload(s, key, target, stream, initBody, chunks)
 	return stream, nil
 }
 
@@ -461,7 +596,7 @@ func (c *Controller) SubscribeEvents() <-chan ClientEvent {
 	defer c.mu.Unlock()
 	ch := make(chan ClientEvent, subscriberBuffer)
 	ch <- c.stateEventLocked()
-	ch <- ClientEvent{Kind: EventPeers, Peers: copyPeers(c.peers)}
+	ch <- c.peersEventLocked()
 	for _, ev := range c.history {
 		ch <- ev
 	}
@@ -504,6 +639,7 @@ func (c *Controller) Snapshot() map[string]any {
 		"state":      c.state,
 		"server":     c.ServerAddress(),
 		"peers":      copyPeers(c.peers),
+		"users":      append([]string(nil), c.users...),
 		"transfers":  transfers,
 		"chats":      chats,
 		"last_error": c.lastErr,
@@ -549,6 +685,38 @@ func (c *Controller) Peers() []protocol.PeerInfo {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return copyPeers(c.peers)
+}
+
+// Users returns every registered username, online or offline.
+func (c *Controller) Users() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.users...)
+}
+
+// peersEventLocked builds the peers event with the online list and all usernames; c.mu must be held.
+func (c *Controller) peersEventLocked() ClientEvent {
+	return ClientEvent{Kind: EventPeers, Peers: copyPeers(c.peers), Users: append([]string(nil), c.users...)}
+}
+
+// peerIDByNameLocked returns the UserID of name if that user is online; c.mu must be held.
+func (c *Controller) peerIDByNameLocked(name string) (uint16, bool) {
+	for _, p := range c.peers {
+		if p.Name == name {
+			return p.ID, true
+		}
+	}
+	return 0, false
+}
+
+// knownUserLocked reports whether name is a registered user; c.mu must be held.
+func (c *Controller) knownUserLocked(name string) bool {
+	for _, u := range c.users {
+		if u == name {
+			return true
+		}
+	}
+	return false
 }
 
 // Transfers returns all known transfers, oldest first.
@@ -611,7 +779,10 @@ func (c *Controller) controlLoop(s *session) {
 			c.mu.Lock()
 			if c.sess == s {
 				c.peers = sortedPeers(msg.Peers)
-				c.emitLocked(ClientEvent{Kind: EventPeers, Peers: copyPeers(c.peers)})
+				if msg.Users != nil {
+					c.users = append([]string(nil), msg.Users...)
+				}
+				c.emitLocked(c.peersEventLocked())
 				failed = c.failOfflineTransfersLocked()
 			}
 			c.mu.Unlock()
@@ -640,12 +811,22 @@ func (c *Controller) chatLoop(s *session) {
 			if err := json.Unmarshal(pkt.Plaintext, &chat); err != nil {
 				continue
 			}
+			direct := h.TargetID != protocol.BroadcastTarget
+			peer := ""
+			if direct {
+				peer = chat.From
+			}
 			c.mu.Lock()
 			c.emitLocked(ClientEvent{
-				Kind: EventChat, From: chat.From, FromID: h.SenderID, TargetID: h.TargetID,
-				Text: chat.Text, Direct: h.TargetID != protocol.BroadcastTarget, TS: chat.TS,
+				Kind: EventChat, From: chat.From, FromID: h.SenderID, TargetID: h.TargetID, Peer: peer,
+				Text: chat.Text, Direct: direct, Stored: chat.Stored, TS: chat.TS, ID: chat.ID,
 			})
 			c.mu.Unlock()
+			if direct {
+				c.noteReceived(s, peer, chat.ID)
+			}
+		case protocol.MsgReceipt:
+			c.onReceipt(pkt.Plaintext)
 		case protocol.MsgFileDone:
 			var done protocol.FileDonePayload
 			if err := json.Unmarshal(pkt.Plaintext, &done); err != nil {
@@ -653,10 +834,15 @@ func (c *Controller) chatLoop(s *session) {
 			}
 			key := transferKey(DirectionSend, s.userID, done.StreamID)
 			c.updateTransfer(key, true, func(tp *TransferProgress) {
-				tp.Verified = done.OK
-				if done.OK {
+				tp.Verified = done.OK && !done.Queued
+				if done.OK && done.Queued {
+					tp.Stage = StageQueued // stored on the server; delivered when the recipient signs in
+					tp.Transferred, tp.Percent = tp.Total, 100
+					tp.Receipt = upgradeReceipt(tp.Receipt, protocol.ReceiptSent)
+				} else if done.OK {
 					tp.Stage = StageVerified
 					tp.Transferred, tp.Percent = tp.Total, 100
+					tp.Receipt = upgradeReceipt(tp.Receipt, protocol.ReceiptDelivered)
 				} else {
 					tp.Stage = StageFailed
 					tp.Error = done.Reason

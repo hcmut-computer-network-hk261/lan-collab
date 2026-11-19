@@ -193,6 +193,8 @@ func (b *HTTPBridge) route(conn net.Conn, req *httpRequest) {
 		b.handleFile(conn, req)
 	case "GET /api/download":
 		b.handleDownload(conn, req)
+	case "POST /api/seen":
+		b.handleSeen(conn, req)
 	case "POST /api/loss":
 		b.handleLoss(conn, req)
 	case "POST /api/logout":
@@ -225,17 +227,40 @@ func (b *HTTPBridge) handleLogin(conn net.Conn, req *httpRequest) {
 
 func (b *HTTPBridge) handleChat(conn net.Conn, req *httpRequest) {
 	var in struct {
-		TargetID uint16 `json:"target_id"`
-		Text     string `json:"text"`
+		TargetID   uint16 `json:"target_id"`
+		TargetName string `json:"target_name"` // a direct message by name; works for offline users too
+		Text       string `json:"text"`
 	}
 	if err := json.Unmarshal(req.Body, &in); err != nil {
-		writeJSONError(conn, 400, "request body must be JSON with target_id and text")
+		writeJSONError(conn, 400, "request body must be JSON with target_id or target_name, and text")
 		return
 	}
 	if in.TargetID == protocol.ServerID {
 		in.TargetID = protocol.BroadcastTarget // 0 and 65535 both mean "everyone"
 	}
-	if err := b.ctrl.SendChat(in.TargetID, in.Text); err != nil {
+	var err error
+	if in.TargetName != "" {
+		err = b.ctrl.SendChatTo(in.TargetName, in.Text)
+	} else {
+		err = b.ctrl.SendChat(in.TargetID, in.Text)
+	}
+	if err != nil {
+		writeJSONError(conn, 400, err.Error())
+		return
+	}
+	writeJSON(conn, 200, map[string]any{"ok": true})
+}
+
+// handleSeen marks a direct conversation as seen; the browser calls it while the conversation is open and visible.
+func (b *HTTPBridge) handleSeen(conn net.Conn, req *httpRequest) {
+	var in struct {
+		Peer string `json:"peer"`
+	}
+	if err := json.Unmarshal(req.Body, &in); err != nil || in.Peer == "" {
+		writeJSONError(conn, 400, "request body must be JSON with peer")
+		return
+	}
+	if err := b.ctrl.MarkSeen(in.Peer); err != nil {
 		writeJSONError(conn, 400, err.Error())
 		return
 	}
@@ -245,11 +270,12 @@ func (b *HTTPBridge) handleChat(conn net.Conn, req *httpRequest) {
 func (b *HTTPBridge) handleFile(conn net.Conn, req *httpRequest) {
 	var in struct {
 		TargetID   uint16 `json:"target_id"`
+		TargetName string `json:"target_name"` // by name; an offline user gets the file when they sign in
 		Filename   string `json:"filename"`
 		Base64Data string `json:"base64_data"`
 	}
 	if err := json.Unmarshal(req.Body, &in); err != nil {
-		writeJSONError(conn, 400, "request body must be JSON with target_id, filename and base64_data")
+		writeJSONError(conn, 400, "request body must be JSON with target_id or target_name, filename and base64_data")
 		return
 	}
 	data, err := base64.StdEncoding.DecodeString(in.Base64Data)
@@ -257,7 +283,12 @@ func (b *HTTPBridge) handleFile(conn net.Conn, req *httpRequest) {
 		writeJSONError(conn, 400, "base64_data is not valid base64")
 		return
 	}
-	stream, err := b.ctrl.SendFile(in.TargetID, in.Filename, data)
+	var stream uint16
+	if in.TargetName != "" {
+		stream, err = b.ctrl.SendFileTo(in.TargetName, in.Filename, data)
+	} else {
+		stream, err = b.ctrl.SendFile(in.TargetID, in.Filename, data)
+	}
 	if err != nil {
 		writeJSONError(conn, 400, err.Error())
 		return

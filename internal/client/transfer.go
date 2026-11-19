@@ -41,7 +41,7 @@ func (c *Controller) runUpload(s *session, key string, target, stream uint16, in
 		if tp == nil || tp.Stage == StageFailed {
 			return false
 		}
-		if !c.peerOnlineLocked(target) {
+		if target != protocol.ServerID && !c.peerOnlineLocked(target) {
 			tp.Stage = StageFailed
 			tp.Error = "the recipient went offline"
 			cp := *tp
@@ -104,8 +104,11 @@ func (c *Controller) onFileInit(s *session, h protocol.UDPHeader, plaintext []by
 	err := meta.Validate()
 	c.mu.Lock()
 	tp.PeerName = c.peerNameLocked(h.SenderID)
+	if h.SenderID == protocol.ServerID {
+		tp.PeerName = meta.From // a stored file the server delivers on behalf of its sender
+	}
 	// PEER_UPDATE (TCP) may beat this FILE_INIT (UDP); if the sender already left, fail the transfer now.
-	senderGone := err == nil && !c.peerOnlineLocked(h.SenderID)
+	senderGone := err == nil && h.SenderID != protocol.ServerID && !c.peerOnlineLocked(h.SenderID)
 	if senderGone {
 		name := tp.PeerName
 		if name == "" {
@@ -152,7 +155,9 @@ func (c *Controller) onFileChunk(s *session, h protocol.UDPHeader, plaintext []b
 	dir := c.downloadDir
 	c.mu.Unlock()
 	saved, saveErr := saveDownload(dir, meta.Filename, data)
+	peer := ""
 	c.updateTransfer(key, true, func(tp *TransferProgress) {
+		peer, tp.MsgID = tp.PeerName, meta.ID
 		tp.Transferred, tp.Percent = tp.Total, 100
 		tp.Verified = true
 		tp.Stage = StageVerified
@@ -163,6 +168,7 @@ func (c *Controller) onFileChunk(s *session, h protocol.UDPHeader, plaintext []b
 		}
 	})
 	c.sendFileDone(s, h.SenderID, h.StreamID, true, "")
+	c.noteReceived(s, peer, meta.ID)
 }
 
 // onFileEnd checks the file is complete; delivery is in order, so any missing chunk means data was lost.
@@ -243,8 +249,8 @@ func (c *Controller) failOfflineTransfersLocked() []TransferProgress {
 	var failed []TransferProgress
 	for _, key := range c.transferOrder {
 		tp := c.transfers[key]
-		if tp == nil || !transferUnfinished(tp.Stage) || c.peerOnlineLocked(tp.PeerID) {
-			continue
+		if tp == nil || !transferUnfinished(tp.Stage) || tp.PeerID == protocol.ServerID || c.peerOnlineLocked(tp.PeerID) {
+			continue // transfers with the server itself (offline delivery) do not depend on anyone's presence
 		}
 		name := tp.PeerName
 		if name == "" {

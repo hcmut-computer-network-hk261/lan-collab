@@ -16,9 +16,10 @@ import (
 
 const consoleHelp = `Commands:
   <text>                 send <text> to everyone
-  /msg <id> <text>       send a direct message to user <id>
-  /send <id> <path>      send a file to user <id>
-  /peers                 list online users
+  /msg <user> <text>     send a direct message (<user> is an ID or a name; offline names get it later)
+  /send <user> <path>    send a file (an offline user receives it when they sign in)
+  /save <file name>      keep a received file (copied to the -downloads folder)
+  /peers                 list online users and offline accounts
   /transfers             list file transfers
   /stats                 show link statistics (RTT, cwnd, rwnd, retransmissions)
   /help                  show this help
@@ -71,7 +72,7 @@ func RunConsole(ctrl *Controller, in io.Reader, out io.Writer, username, passwor
 	printerDone := make(chan struct{})
 	go func() {
 		defer close(printerDone)
-		printConsoleEvents(events, w)
+		printConsoleEvents(events, w, func(peer string) { go func() { _ = ctrl.MarkSeen(peer) }() })
 	}()
 
 	for sc.Scan() {
@@ -98,22 +99,35 @@ func RunConsole(ctrl *Controller, in io.Reader, out io.Writer, username, passwor
 				}
 				w.printf("  #%-5d %-20s %s:%d%s\n", p.ID, p.Name, p.IP, p.UDPPort, me)
 			}
+			online := make(map[string]bool)
+			for _, p := range ctrl.Peers() {
+				online[p.Name] = true
+			}
+			for _, name := range ctrl.Users() {
+				if !online[name] {
+					w.printf("  %-6s %-20s offline\n", "-", name)
+				}
+			}
 		case "/msg":
-			idStr, text, _ := strings.Cut(rest, " ")
-			id, err := parseUserID(idStr)
-			if err != nil {
-				w.printf("! usage: /msg <id> <text>\n")
+			who, text, _ := strings.Cut(rest, " ")
+			if who == "" {
+				w.printf("! usage: /msg <user> <text>\n")
 				continue
 			}
-			if err := ctrl.SendChat(id, text); err != nil {
+			var err error
+			if id, idErr := parseUserID(who); idErr == nil {
+				err = ctrl.SendChat(id, text)
+			} else {
+				err = ctrl.SendChatTo(who, text)
+			}
+			if err != nil {
 				w.printf("! %v\n", err)
 			}
 		case "/send":
-			idStr, filePath, _ := strings.Cut(rest, " ")
-			id, err := parseUserID(idStr)
+			who, filePath, _ := strings.Cut(rest, " ")
 			filePath = strings.Trim(strings.TrimSpace(filePath), `"`)
-			if err != nil || filePath == "" {
-				w.printf("! usage: /send <id> <path>\n")
+			if who == "" || filePath == "" {
+				w.printf("! usage: /send <user> <path>\n")
 				continue
 			}
 			data, err := os.ReadFile(filePath)
@@ -121,12 +135,27 @@ func RunConsole(ctrl *Controller, in io.Reader, out io.Writer, username, passwor
 				w.printf("! cannot read %s: %v\n", filePath, err)
 				continue
 			}
-			stream, err := ctrl.SendFile(id, filepath.Base(filePath), data)
+			var stream uint16
+			if id, idErr := parseUserID(who); idErr == nil {
+				stream, err = ctrl.SendFile(id, filepath.Base(filePath), data)
+			} else {
+				stream, err = ctrl.SendFileTo(who, filepath.Base(filePath), data)
+			}
 			if err != nil {
 				w.printf("! %v\n", err)
 				continue
 			}
-			w.printf("  sending %s (%d bytes) to #%d on stream %d\n", filepath.Base(filePath), len(data), id, stream)
+			w.printf("  sending %s (%d bytes) to %s on stream %d\n", filepath.Base(filePath), len(data), who, stream)
+		case "/save":
+			if rest == "" {
+				w.printf("! usage: /save <file name>\n")
+				continue
+			}
+			if path, err := ctrl.SaveReceived(strings.Trim(rest, `"`)); err != nil {
+				w.printf("! %v\n", err)
+			} else {
+				w.printf("  saved to %s\n", path)
+			}
 		case "/transfers":
 			for _, tp := range ctrl.Transfers() {
 				w.printf("  [%s] %-30s %3d%%  %s  peer #%d  stream %d %s\n", tp.Direction, tp.Filename, tp.Percent, tp.Stage, tp.PeerID, tp.StreamID, tp.Error)
@@ -163,7 +192,8 @@ func parseUserID(s string) (uint16, error) {
 }
 
 // printConsoleEvents prints one line per event; file progress at start, every 25 % and at the end.
-func printConsoleEvents(events <-chan ClientEvent, w *syncWriter) {
+// A direct message printed on the console counts as seen; seen may be nil.
+func printConsoleEvents(events <-chan ClientEvent, w *syncWriter, seen func(peer string)) {
 	lastBucket := make(map[string]int)
 	lastStage := make(map[string]string)
 	for ev := range events {
@@ -173,10 +203,19 @@ func printConsoleEvents(events <-chan ClientEvent, w *syncWriter) {
 				continue // already typed by the user
 			}
 			ts := time.UnixMilli(ev.TS).Format("15:04:05")
-			if ev.Direct {
+			if ev.Stored {
+				w.printf("[%s] (sent while you were offline) %s: %s\n", ts, ev.From, ev.Text)
+			} else if ev.Direct {
 				w.printf("[%s] (direct) %s: %s\n", ts, ev.From, ev.Text)
 			} else {
 				w.printf("[%s] %s: %s\n", ts, ev.From, ev.Text)
+			}
+			if ev.Direct && seen != nil {
+				seen(ev.Peer)
+			}
+		case EventReceipt:
+			if ev.Receipt != "sent" {
+				w.printf("* %s by %s\n", ev.Receipt, ev.Peer)
 			}
 		case EventPeers:
 			names := make([]string, 0, len(ev.Peers))
@@ -189,6 +228,9 @@ func printConsoleEvents(events <-chan ClientEvent, w *syncWriter) {
 			if tp == nil {
 				continue
 			}
+			if tp.Direction == DirectionRecv && tp.Stage == StageReceiving {
+				continue // like a messenger, an incoming file appears only once it has arrived
+			}
 			key := transferKey(tp.Direction, tp.PeerID, tp.StreamID)
 			bucket := tp.Percent / 25
 			if tp.Stage == lastStage[key] && bucket == lastBucket[key] {
@@ -199,9 +241,13 @@ func printConsoleEvents(events <-chan ClientEvent, w *syncWriter) {
 			if tp.Direction == DirectionRecv {
 				arrow = "<-"
 			}
-			line := fmt.Sprintf("* file %s %s #%d: %d%% (%s)", tp.Filename, arrow, tp.PeerID, tp.Percent, tp.Stage)
+			who := tp.PeerName
+			if who == "" {
+				who = fmt.Sprintf("#%d", tp.PeerID)
+			}
+			line := fmt.Sprintf("* file %s %s %s: %d%% (%s)", tp.Filename, arrow, who, tp.Percent, tp.Stage)
 			if tp.SavedPath != "" {
-				line += " saved to " + tp.SavedPath
+				line += fmt.Sprintf(" - type /save %s to keep it", filepath.Base(tp.SavedPath))
 			}
 			if tp.Error != "" {
 				line += " - " + tp.Error
